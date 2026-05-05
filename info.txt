@@ -1,10 +1,6 @@
 Console command to build the executable:
-    uv run pyinstaller --onefile --noconsole --name wow-launcher main.py
-
-Or, equivalently with the spec file:
-    uv run pyinstaller wow-launcher.spec
+    uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" main.py
 
 In the IDE console, uv is not required, so just:
-    pyinstaller --onefile --noconsole --name wow-launcher main.py
-    or
-    pyinstaller wow-launcher.spec
+    pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" main.py
+
