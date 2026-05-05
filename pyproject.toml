@@ -5,3 +5,8 @@ requires-python = ">=3.12, <3.14"
 dependencies = [
     'pyautogui',
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.20.0",
+]
