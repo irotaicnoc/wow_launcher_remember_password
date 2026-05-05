@@ -3,10 +3,11 @@ import pyautogui
 import subprocess
 
 # --- CONFIGURATION ---
-WOW_PATH = r"C:\Path\To\Your\Warmane\Wow.exe"
-ACCOUNT = "YourAccountName"
-PASSWORD = "YourPassword123"
+WOW_PATH = r"E:\GAMES\World of Warcraft 3.3.5a\Wow.exe"
+ACCOUNT = "tyrion321"
+PASSWORD = "yH8yiY524zqT3qJ"
 # ---------------------
+
 
 def launch_and_login():
     # 1. Start the game
@@ -18,10 +19,11 @@ def launch_and_login():
 
     # 3. Type credentials
     # 'interval' makes it look more like human typing to avoid triggers
-    pyautogui.typewrite(ACCOUNT, interval=0.1)
-    pyautogui.press('tab')
-    pyautogui.typewrite(PASSWORD, interval=0.1)
+    # pyautogui.typewrite(ACCOUNT, interval=0.1)
+    # pyautogui.press('tab')
+    pyautogui.typewrite(PASSWORD, interval=0.2)
     pyautogui.press('enter')
+
 
 if __name__ == "__main__":
     launch_and_login()
