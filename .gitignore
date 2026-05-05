@@ -1,4 +1,9 @@
 .venv
 .idea
+.claude
 
+build/
+dist/
+
+wow-launcher.spec
 uv.lock
