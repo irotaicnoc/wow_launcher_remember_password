@@ -21,7 +21,7 @@ def launch_and_login():
     # 'interval' makes it look more like human typing to avoid triggers
     # pyautogui.typewrite(ACCOUNT, interval=0.1)
     # pyautogui.press('tab')
-    pyautogui.typewrite(PASSWORD, interval=0.2)
+    pyautogui.typewrite(PASSWORD, interval=0.1)
     pyautogui.press('enter')
 
 
