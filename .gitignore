@@ -1,3 +1,5 @@
+__pycache__/
+
 .venv
 .idea
 .claude
@@ -8,3 +10,4 @@ dist/
 wow-launcher.spec
 uv.lock
 CLAUDE.md
+config.ini

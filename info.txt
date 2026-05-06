@@ -1,6 +1,12 @@
 Console command to build the executable:
-    uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" main.py
+    uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "config.ini;." main.py
 
 In the IDE console, uv is not required, so just:
-    pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" main.py
+    pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "config.ini;." main.py
+
+Configuration:
+    Edit config.ini before building. --add-data bundles it into the exe so
+    dist/wow-launcher.exe is fully self-contained and does NOT need config.ini
+    next to it at runtime. To rotate password or TOTP seed, edit config.ini
+    and rebuild.
 
