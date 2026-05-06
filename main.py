@@ -7,6 +7,10 @@ from pathlib import Path
 import pyautogui
 import pyotp
 
+TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
+TWO_FA_TIMEOUT_SECONDS = 6
+TWO_FA_CONFIDENCE = 0.9
+
 
 def base_dir() -> Path:
     # When frozen, config.ini is bundled via --add-data and PyInstaller
@@ -26,6 +30,19 @@ def load_config() -> configparser.ConfigParser:
     return config
 
 
+def two_fa_visible() -> bool:
+    reference = base_dir() / TWO_FA_REFERENCE
+    try:
+        location = pyautogui.locateOnScreen(
+            str(reference),
+            confidence=TWO_FA_CONFIDENCE,
+            minSearchTime=TWO_FA_TIMEOUT_SECONDS,
+        )
+    except pyautogui.ImageNotFoundException:
+        return False
+    return location is not None
+
+
 def launch_and_login() -> None:
     cfg = load_config()["wow"]
 
@@ -35,7 +52,8 @@ def launch_and_login() -> None:
     pyautogui.typewrite(cfg["password"], interval=0.09)
     pyautogui.press("enter")
 
-    time.sleep(2)
+    if not two_fa_visible():
+        return
 
     code = pyotp.TOTP(cfg["totp_secret"]).now()
     pyautogui.typewrite(code, interval=0.09)
