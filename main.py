@@ -18,6 +18,8 @@ TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
 TWO_FA_TIMEOUT_SECONDS = 6
 TWO_FA_CONFIDENCE = 0.9
 
+WINDOW_ICON = "assets/wotlk_icon.ico"
+
 KEYRING_SERVICE = "wow-launcher"
 KEYRING_KEYS = ("path", "password", "totp_secret")
 
@@ -63,6 +65,10 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     root = tk.Tk()
     root.title("wow-launcher setup")
     root.resizable(False, False)
+    try:
+        root.iconbitmap(str(base_dir() / WINDOW_ICON))
+    except tk.TclError:
+        pass
 
     path_var = tk.StringVar(value=prefill.get("path", ""))
     pw_var = tk.StringVar(value=prefill.get("password", ""))

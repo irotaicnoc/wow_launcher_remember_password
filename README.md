@@ -34,7 +34,7 @@ Clone the GitHub repo, then run the following from the project root:
 
 ```
 uv sync
-uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" main.py
+uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" --add-data "assets/wotlk_icon.ico;assets" main.py
 ```
 
 Output: `dist/wow-launcher.exe`, fully self-contained.
