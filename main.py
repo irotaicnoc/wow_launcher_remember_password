@@ -1,4 +1,5 @@
 import argparse
+import ctypes
 import subprocess
 import sys
 import time
@@ -10,6 +11,8 @@ import keyring
 import keyring.errors
 import pyautogui
 import pyotp
+
+VK_SHIFT = 0x10
 
 TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
 TWO_FA_TIMEOUT_SECONDS = 6
@@ -124,6 +127,12 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     return result or None
 
 
+def shift_held() -> bool:
+    if sys.platform != "win32":
+        return False
+    return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+
+
 def ensure_credentials(force: bool = False) -> dict[str, str]:
     creds = load_credentials()
     if force or not creds["path"] or not creds["password"]:
@@ -164,7 +173,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.setup:
+    if args.setup or shift_held():
         ensure_credentials(force=True)
         return
 
