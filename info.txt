@@ -1,12 +1,17 @@
 Console command to build the executable:
-    uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "config.ini;." --add-data "assets/2fa_prompt_small.jpg;assets" main.py
+    uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" main.py
 
 In the IDE console, uv is not required, so just:
-    pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "config.ini;." --add-data "assets/2fa_prompt_small.jpg;assets" main.py
+    pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" main.py
 
 Configuration:
-    Edit config.ini before building. --add-data bundles it into the exe so
-    dist/wow-launcher.exe is fully self-contained and does NOT need config.ini
-    next to it at runtime. To rotate password or TOTP seed, edit config.ini
-    and rebuild.
+    On first run, wow-launcher.exe pops up a setup dialog asking for the
+    Wow.exe path, password, and (optional) TOTP secret. Values are stored in
+    Windows Credential Manager under the service name "wow-launcher",
+    encrypted with the current Windows user account's DPAPI key.
+
+    To rotate the password / TOTP seed or change the WoW path, run:
+        wow-launcher.exe --setup
+    or open Windows Credential Manager > Generic Credentials and edit/delete
+    the "wow-launcher" entries. No rebuild required.
 
