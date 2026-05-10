@@ -11,7 +11,7 @@ use it in place of the regular WoW shortcut to skip manual password entry.
 
 Grab the latest Windows exe from the [Releases page](https://github.com/irotaicnoc/wow_launcher_remember_password/releases/latest), or [download directly](https://github.com/irotaicnoc/wow_launcher_remember_password/releases/latest/download/wow-launcher.exe).
 
-> Windows SmartScreen will show "Windows protected your PC" on first run because the exe isn't code-signed — click **More info → Run anyway**.
+> Windows SmartScreen will show "Windows protected your PC" on first run because the exe isn't code-signed: click **More info → Run anyway**.
 
 ## Usage
 
@@ -19,13 +19,13 @@ On first run, a setup dialog asks for:
 
 - Path to `Wow.exe`
 - Account password
-- TOTP secret (optional — leave blank if your account doesn't use 2FA)
+- TOTP secret (optional: leave blank if your account doesn't use 2FA)
 
 Values are stored in **Windows Credential Manager** under the service name `wow-launcher`, encrypted with your Windows user account's DPAPI key. They aren't readable by other users on the machine and don't roam to other machines.
 
-On every subsequent launch, the script starts WoW, types the password, and — if a TOTP secret is set and the 2FA prompt appears on screen — types the TOTP code. The username field is skipped because the WoW client remembers it.
+On every subsequent launch, the script starts WoW, types the password, and (if a TOTP secret is set and the 2FA prompt appears on screen) types the TOTP code. The username field is skipped because the WoW client remembers it.
 
-> Don't switch windows while it's running — `pyautogui` types into whatever window has focus.
+> Don't switch windows while it's running: `pyautogui` types into whatever window has focus.
 
 ## Updating credentials
 
@@ -48,8 +48,8 @@ uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotl
 
 Output: `dist/wow-launcher.exe`, fully self-contained.
 
-The `--exclude-module` flags drop test/build infrastructure (setuptools, numpy.testing, etc.) that gets pulled in transitively but is never executed at runtime. The `--upx-dir` enables [UPX](https://upx.github.io/) compression — install via `winget install UPX.UPX` if you don't have it; on a different machine, swap the path for wherever UPX lives.
+The `--exclude-module` flags drop test/build infrastructure (setuptools, numpy.testing, etc.) that gets pulled in transitively but is never executed at runtime. The `--upx-dir` enables [UPX](https://upx.github.io/) compression. Install via `winget install UPX.UPX` if you don't have it; on a different machine, swap the path for wherever UPX lives.
 
-**Tip — pick a different app icon:** the default `--icon` is `assets/wotlk_icon.ico`. `assets/` also ships `cataclysm_icon.ico`, `wow_icon_1.ico`, and `wow_icon_2.ico` — point `--icon` at any of them, or drop your own `.ico` into `assets/` and use that. If you want the same icon on the setup-dialog window too, also update the corresponding `--add-data "assets/<choice>.ico;assets"` flag and the `WINDOW_ICON` constant in `main.py`.
+**Pick a different app icon (optional):** the default `--icon` is `assets/wotlk_icon.ico`. `assets/` also ships `cataclysm_icon.ico`, `wow_icon_1.ico`, and `wow_icon_2.ico`; point `--icon` at any of them, or drop your own `.ico` into `assets/` and use that. If you want the same icon on the setup-dialog window too, also update the corresponding `--add-data "assets/<choice>.ico;assets"` flag and the `WINDOW_ICON` constant in `main.py`.
 
 If the password types before the login screen appears, or the 2FA prompt isn't detected, tune the constants at the top of `main.py` (`time.sleep(5)` after launch, `TWO_FA_TIMEOUT_SECONDS`, `TWO_FA_CONFIDENCE`). If 2FA stops matching after a resolution / GPU-scaling change, re-crop `assets/2fa_prompt_small.jpg` rather than lowering confidence.
