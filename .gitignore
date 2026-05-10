@@ -9,5 +9,6 @@ dist/
 
 wow-launcher.spec
 uv.lock
+info.txt
 CLAUDE.md
 config.ini
