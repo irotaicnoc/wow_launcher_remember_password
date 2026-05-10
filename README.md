@@ -4,6 +4,15 @@ Tiny Windows utility that launches World of Warcraft and auto-types your passwor
 2FA) into the login screen via `pyautogui`. Originally written for the 3.3.5a / WotLK client. Download the `.exe` and
 use it in place of the regular WoW shortcut to skip manual password entry.
 
+## Download
+
+[![Latest release](https://img.shields.io/github/v/release/irotaicnoc/wow_launcher_remember_password)](https://github.com/irotaicnoc/wow_launcher_remember_password/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/irotaicnoc/wow_launcher_remember_password/total)](https://github.com/irotaicnoc/wow_launcher_remember_password/releases)
+
+Grab the latest Windows exe from the [Releases page](https://github.com/irotaicnoc/wow_launcher_remember_password/releases/latest), or [download directly](https://github.com/irotaicnoc/wow_launcher_remember_password/releases/latest/download/wow-launcher.exe).
+
+> Windows SmartScreen will show "Windows protected your PC" on first run because the exe isn't code-signed — click **More info → Run anyway**.
+
 ## Usage
 
 On first run, a setup dialog asks for:
@@ -40,5 +49,7 @@ uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotl
 Output: `dist/wow-launcher.exe`, fully self-contained.
 
 The `--exclude-module` flags drop test/build infrastructure (setuptools, numpy.testing, etc.) that gets pulled in transitively but is never executed at runtime. The `--upx-dir` enables [UPX](https://upx.github.io/) compression — install via `winget install UPX.UPX` if you don't have it; on a different machine, swap the path for wherever UPX lives.
+
+**Tip — pick a different app icon:** the default `--icon` is `assets/wotlk_icon.ico`. `assets/` also ships `cataclysm_icon.ico`, `wow_icon_1.ico`, and `wow_icon_2.ico` — point `--icon` at any of them, or drop your own `.ico` into `assets/` and use that. If you want the same icon on the setup-dialog window too, also update the corresponding `--add-data "assets/<choice>.ico;assets"` flag and the `WINDOW_ICON` constant in `main.py`.
 
 If the password types before the login screen appears, or the 2FA prompt isn't detected, tune the constants at the top of `main.py` (`time.sleep(5)` after launch, `TWO_FA_TIMEOUT_SECONDS`, `TWO_FA_CONFIDENCE`). If 2FA stops matching after a resolution / GPU-scaling change, re-crop `assets/2fa_prompt_small.jpg` rather than lowering confidence.
