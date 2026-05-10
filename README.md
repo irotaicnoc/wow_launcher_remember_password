@@ -34,9 +34,11 @@ Clone the GitHub repo, then run the following from the project root:
 
 ```
 uv sync
-uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" --add-data "assets/wotlk_icon.ico;assets" main.py
+uv run pyinstaller --onefile --noconsole --name wow-launcher --icon="assets/wotlk_icon.ico" --add-data "assets/2fa_prompt_small.jpg;assets" --add-data "assets/wotlk_icon.ico;assets" --exclude-module setuptools --exclude-module pkg_resources --exclude-module _distutils_hack --exclude-module numpy.f2py --exclude-module numpy.testing --exclude-module numpy.tests --exclude-module numpy.distutils --exclude-module numpy._pyinstaller --exclude-module unittest --exclude-module doctest --exclude-module pydoc --exclude-module pydoc_data --upx-dir "C:\Users\Marco\AppData\Local\Microsoft\WinGet\Packages\UPX.UPX_Microsoft.Winget.Source_8wekyb3d8bbwe\upx-5.1.1-win64" main.py
 ```
 
 Output: `dist/wow-launcher.exe`, fully self-contained.
+
+The `--exclude-module` flags drop test/build infrastructure (setuptools, numpy.testing, etc.) that gets pulled in transitively but is never executed at runtime. The `--upx-dir` enables [UPX](https://upx.github.io/) compression — install via `winget install UPX.UPX` if you don't have it; on a different machine, swap the path for wherever UPX lives.
 
 If the password types before the login screen appears, or the 2FA prompt isn't detected, tune the constants at the top of `main.py` (`time.sleep(5)` after launch, `TWO_FA_TIMEOUT_SECONDS`, `TWO_FA_CONFIDENCE`). If 2FA stops matching after a resolution / GPU-scaling change, re-crop `assets/2fa_prompt_small.jpg` rather than lowering confidence.
