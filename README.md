@@ -22,7 +22,7 @@ On every subsequent launch, the script starts WoW, types the password, and — i
 
 Three ways to reopen the setup dialog:
 
-- **Hold Shift while launching** the exe.
+- **Hold Shift while launching** the exe. It may take seconds for the program to start, keep Shift held until the setup dialog appears.
 - **Run with `--setup`**: `wow-launcher.exe --setup`.
 - **Edit/delete the entries directly** in Windows Credential Manager (`Control Panel → Credential Manager → Windows Credentials`, search for `wow-launcher`).
 
