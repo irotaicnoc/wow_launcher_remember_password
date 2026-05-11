@@ -116,6 +116,21 @@ def attach_tooltip(
     widget.bind("<Leave>", hide)
 
 
+def make_password_toggle(parent: tk.Misc, entry: tk.Entry) -> tk.Button:
+    btn = tk.Button(parent, text="Show", width=5, takefocus=False)
+
+    def toggle() -> None:
+        if entry.cget("show"):
+            entry.config(show="")
+            btn.config(text="Hide")
+        else:
+            entry.config(show="•")
+            btn.config(text="Show")
+
+    btn.config(command=toggle)
+    return btn
+
+
 def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     root = tk.Tk()
     root.title("WoW Launcher Setup")
@@ -149,9 +164,9 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     tk.Button(root, text="Browse…", command=browse).grid(row=1, column=2, padx=(4, 10), pady=4)
 
     tk.Label(root, text="Password:").grid(row=2, column=0, sticky="w", padx=10, pady=4)
-    tk.Entry(root, textvariable=pw_var, show="•", width=48).grid(
-        row=2, column=1, columnspan=2, sticky="we", padx=(4, 10), pady=4
-    )
+    pw_entry = tk.Entry(root, textvariable=pw_var, show="•", width=48)
+    pw_entry.grid(row=2, column=1, sticky="we", padx=4, pady=4)
+    make_password_toggle(root, pw_entry).grid(row=2, column=2, sticky="w", padx=(4, 10), pady=4)
 
     totp_label = tk.Label(root, text="TOTP secret (optional):")
     totp_label.grid(row=3, column=0, sticky="w", padx=10, pady=4)
@@ -160,9 +175,9 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         text="Base32 seed from your authenticator app\nLeave empty if the account has no 2FA",
         side="below",
     )
-    tk.Entry(root, textvariable=totp_var, show="•", width=48).grid(
-        row=3, column=1, columnspan=2, sticky="we", padx=(4, 10), pady=4
-    )
+    totp_entry = tk.Entry(root, textvariable=totp_var, show="•", width=48)
+    totp_entry.grid(row=3, column=1, sticky="we", padx=4, pady=4)
+    make_password_toggle(root, totp_entry).grid(row=3, column=2, sticky="w", padx=(4, 10), pady=4)
 
     result: dict[str, str] = {}
 
