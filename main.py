@@ -6,7 +6,6 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
-
 import keyring
 import keyring.errors
 import pyautogui
