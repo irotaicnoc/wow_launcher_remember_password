@@ -1,7 +1,9 @@
 import argparse
 import ctypes
+import logging
 import subprocess
 import sys
+import tempfile
 import time
 import tkinter as tk
 from pathlib import Path
@@ -22,6 +24,17 @@ WINDOW_ICON = "assets/wotlk_icon.ico"
 
 KEYRING_SERVICE = "wow-launcher"
 KEYRING_KEYS = ("path", "password", "totp_secret")
+
+
+LOG_PATH = Path(tempfile.gettempdir()) / "wow-launcher.log"
+
+
+def setup_logging() -> None:
+    logging.basicConfig(
+        filename=str(LOG_PATH),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
 
 
 def base_dir() -> Path:
@@ -204,7 +217,23 @@ def ensure_credentials(force: bool = False) -> dict[str, str]:
 def launch_and_login() -> None:
     cfg = ensure_credentials()
 
-    subprocess.Popen(cfg["path"])
+    exe_path = Path(cfg["path"])
+    if not exe_path.is_file():
+        logging.error("Configured WoW executable does not exist: %s", cfg["path"])
+        messagebox.showerror(
+            "WoW not found",
+            f"The configured WoW executable does not exist:\n{cfg['path']}\n\n"
+            "Run with --setup or hold Shift while launching to update it.",
+        )
+        return
+
+    try:
+        subprocess.Popen(str(exe_path))
+    except OSError as exc:
+        logging.exception("Failed to start WoW")
+        messagebox.showerror("Launch failed", f"Could not start WoW:\n{exc}")
+        return
+
     time.sleep(5)
 
     pyautogui.typewrite(cfg["password"], interval=0.09)
@@ -222,6 +251,7 @@ def launch_and_login() -> None:
 
 
 def main() -> None:
+    setup_logging()
     parser = argparse.ArgumentParser(description="Launch WoW with credentials stored in Windows Credential Manager.")
     parser.add_argument(
         "--setup",
@@ -230,11 +260,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.setup or shift_held():
-        ensure_credentials(force=True)
-        return
-
-    launch_and_login()
+    try:
+        if args.setup or shift_held():
+            ensure_credentials(force=True)
+            return
+        launch_and_login()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logging.exception("Unhandled error")
+        messagebox.showerror(
+            "WoW Launcher error",
+            f"{exc}\n\nDetails written to:\n{LOG_PATH}",
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
