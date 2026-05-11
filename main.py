@@ -6,6 +6,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from typing import Literal
 import keyring
 import keyring.errors
 import pyautogui
@@ -60,9 +61,51 @@ def save_credentials(creds: dict[str, str]) -> None:
                 pass
 
 
+def attach_tooltip(
+    widget: tk.Widget,
+    text: str,
+    side: Literal["above", "below", "left", "right"] = "right",
+) -> None:
+    tip: dict[str, tk.Toplevel | None] = {"win": None}
+
+    def show(_e: tk.Event) -> None:
+        if tip["win"] is not None:
+            return
+        win = tk.Toplevel(widget)
+        win.wm_overrideredirect(True)
+        tk.Label(
+            win, text=text, justify="left", background="#ffffe0",
+            relief="solid", borderwidth=1, padx=6, pady=3,
+        ).pack()
+        win.update_idletasks()
+        tw, th = win.winfo_reqwidth(), win.winfo_reqheight()
+        wx, wy = widget.winfo_rootx(), widget.winfo_rooty()
+        ww, wh = widget.winfo_width(), widget.winfo_height()
+        gap = 8
+        if side == "right":
+            x, y = wx + ww + gap, wy
+        elif side == "left":
+            x, y = wx - tw - gap, wy
+        elif side == "below":
+            x, y = wx, wy + wh + gap
+        else:  # above
+            x, y = wx, wy - th - gap
+        win.wm_geometry(f"+{x}+{y}")
+        tip["win"] = win
+
+    def hide(_e: tk.Event) -> None:
+        win = tip["win"]
+        if win is not None:
+            win.destroy()
+            tip["win"] = None
+
+    widget.bind("<Enter>", show)
+    widget.bind("<Leave>", hide)
+
+
 def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     root = tk.Tk()
-    root.title("wow-launcher setup")
+    root.title("WoW Launcher Setup")
     root.resizable(False, False)
     try:
         root.iconbitmap(str(base_dir() / WINDOW_ICON))
@@ -80,13 +123,13 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         fg="#555",
     ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(12, 8))
 
-    tk.Label(root, text="WoW executable:").grid(row=1, column=0, sticky="w", padx=10, pady=4)
+    path_label = tk.Label(root, text="WoW executable:")
+    path_label.grid(row=1, column=0, sticky="w", padx=10, pady=4)
+    attach_tooltip(widget=path_label, text="Full path to Wow.exe\ne.g. C:\\Games\\WoW\\Wow.exe", side="above")
     tk.Entry(root, textvariable=path_var, width=48).grid(row=1, column=1, padx=4, pady=4)
 
     def browse() -> None:
-        chosen = filedialog.askopenfilename(
-            parent=root, title="Select Wow.exe", filetypes=[("Executable", "*.exe")]
-        )
+        chosen = filedialog.askopenfilename(parent=root, title="Select Wow.exe", filetypes=[("Executable", "*.exe")])
         if chosen:
             path_var.set(chosen)
 
@@ -97,7 +140,13 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         row=2, column=1, columnspan=2, sticky="we", padx=(4, 10), pady=4
     )
 
-    tk.Label(root, text="TOTP secret (optional):").grid(row=3, column=0, sticky="w", padx=10, pady=4)
+    totp_label = tk.Label(root, text="TOTP secret (optional):")
+    totp_label.grid(row=3, column=0, sticky="w", padx=10, pady=4)
+    attach_tooltip(
+        widget=totp_label,
+        text="Base32 seed from your authenticator app\nLeave empty if the account has no 2FA",
+        side="below",
+    )
     tk.Entry(root, textvariable=totp_var, show="•", width=48).grid(
         row=3, column=1, columnspan=2, sticky="we", padx=(4, 10), pady=4
     )
