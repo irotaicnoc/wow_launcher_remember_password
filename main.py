@@ -106,7 +106,7 @@ def attach_tooltip(
 def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     root = tk.Tk()
     root.title("WoW Launcher Setup")
-    root.resizable(False, False)
+    root.columnconfigure(1, weight=1)
     try:
         root.iconbitmap(str(base_dir() / WINDOW_ICON))
     except tk.TclError:
@@ -126,7 +126,7 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     path_label = tk.Label(root, text="WoW executable:")
     path_label.grid(row=1, column=0, sticky="w", padx=10, pady=4)
     attach_tooltip(widget=path_label, text="Full path to Wow.exe\ne.g. C:\\Games\\WoW\\Wow.exe", side="above")
-    tk.Entry(root, textvariable=path_var, width=48).grid(row=1, column=1, padx=4, pady=4)
+    tk.Entry(root, textvariable=path_var, width=48).grid(row=1, column=1, sticky="we", padx=4, pady=4)
 
     def browse() -> None:
         chosen = filedialog.askopenfilename(parent=root, title="Select Wow.exe", filetypes=[("Executable", "*.exe")])
@@ -176,6 +176,9 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
 
     root.bind("<Return>", lambda _e: on_save())
     root.bind("<Escape>", lambda _e: root.destroy())
+
+    root.update_idletasks()
+    root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
 
     root.mainloop()
     return result or None
