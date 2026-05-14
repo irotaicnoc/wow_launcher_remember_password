@@ -16,25 +16,22 @@ import pyotp
 
 VK_SHIFT = 0x10
 
+PASSWORD_TIMEOUT_SECONDS = 15
 TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
 TWO_FA_TIMEOUT_SECONDS = 6
 TWO_FA_CONFIDENCE = 0.9
+TYPING_TIMEOUT_SECONDS = 0.09
 
 WINDOW_ICON = "assets/wotlk_icon.ico"
 
 KEYRING_SERVICE = "wow-launcher"
 KEYRING_KEYS = ("path", "password", "totp_secret")
 
-
 LOG_PATH = Path(tempfile.gettempdir()) / "wow-launcher.log"
 
 
 def setup_logging() -> None:
-    logging.basicConfig(
-        filename=str(LOG_PATH),
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    logging.basicConfig(filename=str(LOG_PATH), level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 def base_dir() -> Path:
@@ -74,11 +71,7 @@ def save_credentials(creds: dict[str, str]) -> None:
                 pass
 
 
-def attach_tooltip(
-    widget: tk.Widget,
-    text: str,
-    side: Literal["above", "below", "left", "right"] = "right",
-) -> None:
+def attach_tooltip(widget: tk.Widget, text: str, side: Literal["above", "below", "left", "right"] = "right") -> None:
     tip: dict[str, tk.Toplevel | None] = {"win": None}
 
     def show(_e: tk.Event) -> None:
@@ -218,6 +211,47 @@ def shift_held() -> bool:
     return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
 
 
+def focus_window_for_pid(pid: int) -> None:
+    if sys.platform != "win32":
+        return
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    found: list[int] = []
+    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        process_id = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(EnumProc(callback), 0)
+    if not found:
+        logging.info("No visible window found for WoW pid %s; skipping focus", pid)
+        return
+    hwnd = found[0]
+    SW_RESTORE = 9
+    user32.ShowWindow(hwnd, SW_RESTORE)
+
+    # SetForegroundWindow is blocked when another process owns the foreground.
+    # Attaching to the foreground thread's input queue lifts that restriction.
+    foreground_hwnd = user32.GetForegroundWindow()
+    foreground_thread = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+    current_thread = kernel32.GetCurrentThreadId()
+    attached = False
+    if foreground_thread and foreground_thread != current_thread:
+        attached = bool(user32.AttachThreadInput(current_thread, foreground_thread, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetFocus(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_thread, foreground_thread, False)
+
+
 def ensure_credentials(force: bool = False) -> dict[str, str]:
     creds = load_credentials()
     if force or not creds["path"] or not creds["password"]:
@@ -243,15 +277,18 @@ def launch_and_login() -> None:
         return
 
     try:
-        subprocess.Popen(str(exe_path))
+        proc = subprocess.Popen(str(exe_path))
     except OSError as exc:
         logging.exception("Failed to start WoW")
         messagebox.showerror("Launch failed", f"Could not start WoW:\n{exc}")
         return
 
-    time.sleep(5)
+    time.sleep(PASSWORD_TIMEOUT_SECONDS)
 
-    pyautogui.typewrite(cfg["password"], interval=0.09)
+    focus_window_for_pid(proc.pid)
+
+    time.sleep(0.1)
+    pyautogui.typewrite(cfg["password"], interval=TYPING_TIMEOUT_SECONDS)
     pyautogui.press("enter")
 
     if not cfg["totp_secret"]:
@@ -261,7 +298,7 @@ def launch_and_login() -> None:
         return
 
     code = pyotp.TOTP(cfg["totp_secret"]).now()
-    pyautogui.typewrite(code, interval=0.09)
+    pyautogui.typewrite(code, interval=TYPING_TIMEOUT_SECONDS)
     pyautogui.press("enter")
 
 
@@ -284,10 +321,7 @@ def main() -> None:
         raise
     except Exception as exc:
         logging.exception("Unhandled error")
-        messagebox.showerror(
-            "WoW Launcher error",
-            f"{exc}\n\nDetails written to:\n{LOG_PATH}",
-        )
+        messagebox.showerror("WoW Launcher error", f"{exc}\n\nDetails written to:\n{LOG_PATH}")
         raise SystemExit(1)
 
 
