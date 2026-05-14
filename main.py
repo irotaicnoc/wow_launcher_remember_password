@@ -211,11 +211,12 @@ def shift_held() -> bool:
     return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
 
 
-def focus_window_for_pid(pid: int) -> None:
+def focus_window_for_pid(pid: int) -> bool:
     if sys.platform != "win32":
-        return
+        return True
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
     found: list[int] = []
     EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
@@ -229,8 +230,8 @@ def focus_window_for_pid(pid: int) -> None:
 
     user32.EnumWindows(EnumProc(callback), 0)
     if not found:
-        logging.info("No visible window found for WoW pid %s; skipping focus", pid)
-        return
+        logging.error("No visible window found for WoW pid %s", pid)
+        return False
     hwnd = found[0]
     SW_RESTORE = 9
     user32.ShowWindow(hwnd, SW_RESTORE)
@@ -250,6 +251,22 @@ def focus_window_for_pid(pid: int) -> None:
     finally:
         if attached:
             user32.AttachThreadInput(current_thread, foreground_thread, False)
+
+    # Focus changes may be processed asynchronously after AttachThreadInput detaches,
+    # and WoW may have several top-level windows — verify by PID, not handle, with a brief poll.
+    deadline = time.monotonic() + 0.5
+    foreground_pid = ctypes.c_ulong()
+    while True:
+        user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(foreground_pid))
+        if foreground_pid.value == pid:
+            return True
+        if time.monotonic() >= deadline:
+            logging.error(
+                "WoW did not become foreground (foreground pid=%s, want %s)",
+                foreground_pid.value, pid,
+            )
+            return False
+        time.sleep(0.05)
 
 
 def ensure_credentials(force: bool = False) -> dict[str, str]:
@@ -285,9 +302,13 @@ def launch_and_login() -> None:
 
     time.sleep(PASSWORD_TIMEOUT_SECONDS)
 
-    focus_window_for_pid(proc.pid)
+    if not focus_window_for_pid(proc.pid):
+        messagebox.showerror(
+            "Focus failed",
+            f"Could not focus the WoW window; password was not typed.\n\nDetails written to:\n{LOG_PATH}",
+        )
+        raise SystemExit(1)
 
-    time.sleep(0.1)
     pyautogui.typewrite(cfg["password"], interval=TYPING_TIMEOUT_SECONDS)
     pyautogui.press("enter")
 
