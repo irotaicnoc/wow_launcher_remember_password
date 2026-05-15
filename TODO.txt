@@ -1,0 +1,2 @@
+since it is only for Windows and only one file, is there a way to tell the GitHub Action to only create the .exe and
+not the zip and tar?
