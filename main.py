@@ -16,11 +16,13 @@ import pyotp
 
 VK_SHIFT = 0x10
 
-PASSWORD_TIMEOUT_SECONDS = 15
-TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
+WINDOW_WAIT_SECONDS = 30
+LOGIN_UI_LOAD_SECONDS = 2.5
+TYPING_INTERVAL_SECONDS = 0.09
+
 TWO_FA_TIMEOUT_SECONDS = 6
 TWO_FA_CONFIDENCE = 0.9
-TYPING_TIMEOUT_SECONDS = 0.09
+TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
 
 WINDOW_ICON = "assets/wotlk_icon.ico"
 
@@ -211,6 +213,34 @@ def shift_held() -> bool:
     return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
 
 
+def wait_for_window_for_pid(pid: int, timeout: float) -> bool:
+    if sys.platform != "win32":
+        return True
+    user32 = ctypes.windll.user32
+    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    found: list[int] = []
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        process_id = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    enum_proc = EnumProc(callback)
+    deadline = time.monotonic() + timeout
+    while True:
+        found.clear()
+        user32.EnumWindows(enum_proc, 0)
+        if found:
+            return True
+        if time.monotonic() >= deadline:
+            logging.error("Timed out after %ss waiting for WoW window (pid=%s)", timeout, pid)
+            return False
+        time.sleep(0.2)
+
+
 def focus_window_for_pid(pid: int) -> bool:
     if sys.platform != "win32":
         return True
@@ -300,7 +330,15 @@ def launch_and_login() -> None:
         messagebox.showerror("Launch failed", f"Could not start WoW:\n{exc}")
         return
 
-    time.sleep(PASSWORD_TIMEOUT_SECONDS)
+    if not wait_for_window_for_pid(proc.pid, timeout=WINDOW_WAIT_SECONDS):
+        messagebox.showerror(
+            "Window not found",
+            f"WoW did not show a window within {WINDOW_WAIT_SECONDS}s; password was not typed.\n\n"
+            f"Details written to:\n{LOG_PATH}",
+        )
+        raise SystemExit(1)
+
+    time.sleep(LOGIN_UI_LOAD_SECONDS)
 
     if not focus_window_for_pid(proc.pid):
         messagebox.showerror(
@@ -309,7 +347,7 @@ def launch_and_login() -> None:
         )
         raise SystemExit(1)
 
-    pyautogui.typewrite(cfg["password"], interval=TYPING_TIMEOUT_SECONDS)
+    pyautogui.typewrite(cfg["password"], interval=TYPING_INTERVAL_SECONDS)
     pyautogui.press("enter")
 
     if not cfg["totp_secret"]:
@@ -319,7 +357,7 @@ def launch_and_login() -> None:
         return
 
     code = pyotp.TOTP(cfg["totp_secret"]).now()
-    pyautogui.typewrite(code, interval=TYPING_TIMEOUT_SECONDS)
+    pyautogui.typewrite(code, interval=TYPING_INTERVAL_SECONDS)
     pyautogui.press("enter")
 
 
