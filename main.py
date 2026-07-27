@@ -1,11 +1,13 @@
 import argparse
 import ctypes
+import json
 import logging
 import subprocess
 import sys
 import tempfile
 import time
 import tkinter as tk
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -23,28 +25,58 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12
 VK_RETURN = 0x0D
 
-WINDOW_WAIT_SECONDS = 30
-WINDOW_STABLE_SECONDS = 0.5  # the window rect must stop changing before the client is done building its UI
 WINDOW_STABLE_TIMEOUT_SECONDS = 8
-LOGIN_UI_LOAD_SECONDS = 2.5
-FOCUS_SETTLE_SECONDS = 0.4  # activation is asynchronous: typing immediately loses the first characters
-KEY_HOLD_SECONDS = 0.03  # a key that goes down and up within one frame can be missed entirely
-TYPING_INTERVAL_SECONDS = 0.09
-
-TWO_FA_TIMEOUT_SECONDS = 6
 TWO_FA_POLL_SECONDS = 0.15
 TWO_FA_CONFIRM_SECONDS = 0.25  # re-check delay: proves the prompt persists and the capture is not frozen
-TWO_FA_CONFIDENCE = 0.9
 TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
-
-TOTP_MIN_REMAINING_SECONDS = 4.0  # never type a code that expires while it is being typed
 
 WINDOW_ICON = "assets/wotlk_icon.ico"
 
 KEYRING_SERVICE = "wow-launcher"
 SECRET_KEYS = ("path", "password", "totp_secret")
-SETTING_KEYS = ("debug",)
+SETTING_KEYS = ("debug", "timings")
 KEYRING_KEYS = SECRET_KEYS + SETTING_KEYS
+
+
+@dataclass(frozen=True)
+class Timings:
+    """The tunable part of the login flow, editable from the Advanced section of the setup dialog."""
+    window_wait_seconds: float = 30.0
+    window_stable_seconds: float = 0.5
+    login_ui_load_seconds: float = 2.5
+    focus_settle_seconds: float = 0.4
+    key_hold_seconds: float = 0.03
+    typing_interval_seconds: float = 0.09
+    two_fa_timeout_seconds: float = 6.0
+    two_fa_confidence: float = 0.9
+    totp_min_remaining_seconds: float = 4.0
+
+
+# field, dialog label, tooltip, lowest accepted value, highest accepted value
+TIMING_FIELDS = (
+    ("window_wait_seconds", "Wait for window (s)",
+     "Give up if no WoW window has appeared this long after launch.", 1.0, 300.0),
+    ("window_stable_seconds", "Window settle (s)",
+     "The window must stop moving and resizing for this long before\nthe client counts as ready.", 0.0, 30.0),
+    ("login_ui_load_seconds", "Login UI load (s)",
+     "Extra wait for the login screen to finish drawing.\nRaise this first if characters go missing.", 0.0, 120.0),
+    ("focus_settle_seconds", "Focus settle (s)",
+     "Pause between focusing the window and the first keystroke.", 0.0, 30.0),
+    ("key_hold_seconds", "Key hold (s)",
+     "How long each key stays held down. Raise it if the client\nmisses individual keys.", 0.0, 1.0),
+    ("typing_interval_seconds", "Typing interval (s)",
+     "Pause between one key and the next.", 0.0, 2.0),
+    ("two_fa_timeout_seconds", "2FA search timeout (s)",
+     "How long to watch for the 2FA prompt before concluding\nthe account did not ask for a code.", 0.0, 120.0),
+    ("two_fa_confidence", "2FA match confidence",
+     "How closely the screen must match the reference image, 0 to 1.\n"
+     "Lowering it risks typing a code when no prompt is on screen.", 0.5, 1.0),
+    ("totp_min_remaining_seconds", "TOTP minimum life (s)",
+     "If the current code expires sooner than this, wait for the next one\n"
+     "instead of typing one that dies mid-entry.", 0.0, 29.0),
+)
+
+TIMINGS = Timings()
 
 LOG_PATH = Path(tempfile.gettempdir()) / "wow-launcher.log"
 DEBUG_DIR = Path(tempfile.gettempdir()) / "wow-launcher-debug"
@@ -83,6 +115,44 @@ def save_debug_image(image: Image.Image, name: str, box: tuple[int, int, int, in
         image.save(DEBUG_DIR / f"{_run_id}_{name}.png")
     except OSError:
         logging.exception("Could not write debug image %s", name)
+
+
+def timings_from_json(raw: str) -> Timings:
+    """Stored timings, falling back to the default for anything missing, unreadable, or out of range."""
+    stored: dict[str, object] = {}
+    if raw:
+        try:
+            stored = json.loads(raw)
+        except ValueError:
+            logging.warning("Stored timings are not valid JSON; using the defaults")
+    defaults = Timings()
+    values: dict[str, float] = {}
+    for key, label, _tooltip, low, high in TIMING_FIELDS:
+        default = getattr(defaults, key)
+        raw_value = stored.get(key)
+        try:
+            value = default if raw_value is None else float(raw_value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            logging.warning("Stored '%s' (%r) is not a number; using the default %s", label, raw_value, default)
+            value = default
+        if not low <= value <= high:
+            logging.warning("Stored '%s' (%s) is outside %g..%g; using the default %s", label, value, low, high, default)
+            value = default
+        values[key] = value
+    return Timings(**values)
+
+
+def timings_to_json(timings: Timings) -> str:
+    return json.dumps({key: getattr(timings, key) for key, *_ in TIMING_FIELDS})
+
+
+def apply_settings(creds: dict[str, str]) -> None:
+    """Push the stored non-secret settings into the globals the login flow reads."""
+    global TIMINGS
+    TIMINGS = timings_from_json(creds.get("timings", ""))
+    if creds.get("debug") == "1" and not _debug_enabled:
+        setup_logging(debug=True)  # apply the setting to this run too, not just the next one
+    logging.debug("Timings in effect: %s", TIMINGS)
 
 
 def base_dir() -> Path:
@@ -148,7 +218,7 @@ def _press_vk(vk: int, modifiers: int = 0) -> None:
     down = [_key_event(mod_vk, user32.MapVirtualKeyW(mod_vk, MAPVK_VK_TO_VSC), 0) for mod_vk in modifier_vks]
     down.append(_key_event(vk, scan, 0))
     _send(down)
-    time.sleep(KEY_HOLD_SECONDS)
+    time.sleep(TIMINGS.key_hold_seconds)
     up = [_key_event(vk, scan, KEYEVENTF_KEYUP)]
     up += [
         _key_event(mod_vk, user32.MapVirtualKeyW(mod_vk, MAPVK_VK_TO_VSC), KEYEVENTF_KEYUP)
@@ -160,7 +230,7 @@ def _press_vk(vk: int, modifiers: int = 0) -> None:
 def _press_unicode(char: str) -> None:
     """Send the character itself instead of a key, for characters the active layout cannot produce."""
     _send([_key_event(0, ord(char), KEYEVENTF_UNICODE)])
-    time.sleep(KEY_HOLD_SECONDS)
+    time.sleep(TIMINGS.key_hold_seconds)
     _send([_key_event(0, ord(char), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)])
 
 
@@ -178,7 +248,7 @@ def release_stuck_modifiers() -> None:
 def type_text(text: str) -> None:
     """Type text through the layout that is active right now, one key at a time."""
     if sys.platform != "win32":
-        pyautogui.typewrite(text, interval=TYPING_INTERVAL_SECONDS)
+        pyautogui.typewrite(text, interval=TIMINGS.typing_interval_seconds)
         return
     for char in text:
         # VkKeyScanW resolves the character against the current keyboard layout, so this stays correct
@@ -188,7 +258,7 @@ def type_text(text: str) -> None:
             _press_unicode(char)
         else:
             _press_vk(scanned & 0xFF, (scanned >> 8) & 0x07)
-        time.sleep(TYPING_INTERVAL_SECONDS)
+        time.sleep(TIMINGS.typing_interval_seconds)
 
 
 def press_enter() -> None:
@@ -233,7 +303,7 @@ def two_fa_state(rect: tuple[int, int, int, int] | None) -> Literal["found", "ab
     needle = load_two_fa_reference()
     state: Literal["found", "absent", "stale"] = "absent"
     best_score, best_location, best_frame = -1.0, (0, 0), None
-    deadline = time.monotonic() + TWO_FA_TIMEOUT_SECONDS
+    deadline = time.monotonic() + TIMINGS.two_fa_timeout_seconds
     started = time.monotonic()
 
     warned_about_size = False
@@ -249,7 +319,7 @@ def two_fa_state(rect: tuple[int, int, int, int] | None) -> Literal["found", "ab
         if best_frame is None or score > best_score:
             best_score, best_location, best_frame = score, location, frame
 
-        if score >= TWO_FA_CONFIDENCE:
+        if score >= TIMINGS.two_fa_confidence:
             # A real prompt stays put on an animated screen. A capture pipeline that has gone stale keeps
             # returning one frozen frame, which is what makes an old prompt look like a current one.
             time.sleep(TWO_FA_CONFIRM_SECONDS)
@@ -264,7 +334,7 @@ def two_fa_state(rect: tuple[int, int, int, int] | None) -> Literal["found", "ab
                 )
                 state = "stale"
                 break
-            if again_score >= TWO_FA_CONFIDENCE:
+            if again_score >= TIMINGS.two_fa_confidence:
                 logging.debug("2FA prompt confirmed at %s (%.3f, then %.3f)", location, score, again_score)
                 state = "found"
                 break
@@ -279,7 +349,7 @@ def two_fa_state(rect: tuple[int, int, int, int] | None) -> Literal["found", "ab
 
     logging.debug(
         "2FA search ended as '%s' after %.1fs, best score %.3f at %s (threshold %.2f)",
-        state, time.monotonic() - started, best_score, best_location, TWO_FA_CONFIDENCE,
+        state, time.monotonic() - started, best_score, best_location, TIMINGS.two_fa_confidence,
     )
     if best_frame is not None:
         box = (
@@ -372,6 +442,7 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     pw_var = tk.StringVar(value=prefill.get("password", ""))
     totp_var = tk.StringVar(value=prefill.get("totp_secret", ""))
     debug_var = tk.BooleanVar(value=prefill.get("debug", "") == "1")
+    timings = timings_from_json(prefill.get("timings", ""))
 
     tk.Label(
         root,
@@ -420,6 +491,54 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         side="right",
     )
 
+    advanced_frame = tk.LabelFrame(root, text="Login flow timings", padx=6, pady=4)
+    advanced_frame.grid(row=6, column=0, columnspan=3, sticky="we", padx=10, pady=(4, 0))
+    advanced_frame.grid_remove()  # folded away until the user asks for it
+    advanced_frame.columnconfigure(1, weight=1)
+
+    tk.Label(
+        advanced_frame,
+        text="Leave these alone unless the launcher mistimes something. Hover a name to see what it does.",
+        justify="left",
+        fg="#555",
+    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+    timing_vars: dict[str, tk.StringVar] = {}
+    for index, (key, label, tooltip, _low, _high) in enumerate(TIMING_FIELDS, start=1):
+        field_label = tk.Label(advanced_frame, text=label)
+        field_label.grid(row=index, column=0, sticky="w", pady=1)
+        attach_tooltip(widget=field_label, text=tooltip, side="right")
+        timing_vars[key] = tk.StringVar(value=f"{getattr(timings, key):g}")
+        tk.Entry(advanced_frame, textvariable=timing_vars[key], width=10, justify="right").grid(
+            row=index, column=1, sticky="e", pady=1,
+        )
+
+    def reset_timings() -> None:
+        defaults = Timings()
+        for field, *_ in TIMING_FIELDS:
+            timing_vars[field].set(f"{getattr(defaults, field):g}")
+
+    tk.Button(advanced_frame, text="Reset to defaults", command=reset_timings).grid(
+        row=len(TIMING_FIELDS) + 1, column=0, columnspan=2, sticky="e", pady=(6, 2),
+    )
+
+    advanced_open = tk.BooleanVar(value=False)
+
+    def toggle_advanced() -> None:
+        if advanced_open.get():
+            advanced_frame.grid_remove()
+            advanced_toggle.config(text="► Advanced")
+        else:
+            advanced_frame.grid()
+            advanced_toggle.config(text="▼ Advanced")
+        advanced_open.set(not advanced_open.get())
+        root.update_idletasks()
+        root.geometry("")  # let the window shrink back when the section folds away
+        root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
+
+    advanced_toggle = tk.Button(root, text="► Advanced", command=toggle_advanced, relief="flat", anchor="w", width=12)
+    advanced_toggle.grid(row=5, column=0, sticky="w", padx=6, pady=(6, 0))
+
     result: dict[str, str] = {}
 
     def on_save() -> None:
@@ -433,14 +552,35 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
                 parent=root,
             )
             return
+
+        timing_values: dict[str, float] = {}
+        problems: list[str] = []
+        for key, label, _tooltip, low, high in TIMING_FIELDS:
+            text = timing_vars[key].get().strip().replace(",", ".")  # an Italian layout types a decimal comma
+            try:
+                value = float(text)
+            except ValueError:
+                problems.append(f"{label}: '{text}' is not a number")
+                continue
+            if not low <= value <= high:
+                problems.append(f"{label}: must be between {low:g} and {high:g}")
+                continue
+            timing_values[key] = value
+        if problems:
+            if not advanced_open.get():
+                toggle_advanced()  # show the fields being complained about
+            messagebox.showerror("Invalid timings", "\n".join(problems), parent=root)
+            return
+
         result["path"] = path_value
         result["password"] = pw_value
         result["totp_secret"] = totp_value
         result["debug"] = "1" if debug_var.get() else "0"
+        result["timings"] = timings_to_json(Timings(**timing_values))
         root.destroy()
 
     button_frame = tk.Frame(root)
-    button_frame.grid(row=5, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
+    button_frame.grid(row=7, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
     tk.Button(button_frame, text="Cancel", command=root.destroy, width=10).pack(side="right", padx=(4, 0))
     tk.Button(button_frame, text="Save", command=on_save, width=10).pack(side="right")
 
@@ -522,7 +662,7 @@ def wait_for_stable_window(pid: int) -> None:
         if rect != last_rect:
             logging.debug("WoW window rect changed to %s", rect)
             last_rect, unchanged_since = rect, time.monotonic()
-        elif time.monotonic() - unchanged_since >= WINDOW_STABLE_SECONDS:
+        elif time.monotonic() - unchanged_since >= TIMINGS.window_stable_seconds:
             return
         time.sleep(0.1)
     logging.warning("WoW window rect never settled within %ss", WINDOW_STABLE_TIMEOUT_SECONDS)
@@ -536,6 +676,16 @@ def foreground_pid() -> int:
     process_id = ctypes.c_ulong()
     user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(process_id))
     return process_id.value
+
+
+def foreground_keyboard_layout() -> str:
+    """Layout the foreground window types under, e.g. 0x00000410 for Italian, 0x04110411 for a Japanese IME."""
+    if sys.platform != "win32":
+        return "n/a"
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    return f"0x{user32.GetKeyboardLayout(thread) & 0xFFFFFFFF:08X}"
 
 
 def focus_window_for_pid(pid: int) -> bool:
@@ -599,8 +749,7 @@ def ensure_credentials(force: bool = False) -> dict[str, str]:
             raise SystemExit("Setup cancelled.")
         save_credentials(prompted)
         creds = prompted
-        if creds.get("debug") == "1" and not _debug_enabled:
-            setup_logging(debug=True)  # apply the setting to this run too, not just the next one
+    apply_settings(creds)
     return creds
 
 
@@ -626,16 +775,16 @@ def launch_and_login() -> None:
 
     logging.debug("Started WoW (pid=%s) from %s", proc.pid, exe_path)
 
-    if not wait_for_window_for_pid(proc.pid, timeout=WINDOW_WAIT_SECONDS):
+    if not wait_for_window_for_pid(proc.pid, timeout=TIMINGS.window_wait_seconds):
         messagebox.showerror(
             "Window not found",
-            f"WoW did not show a window within {WINDOW_WAIT_SECONDS}s; password was not typed.\n\n"
+            f"WoW did not show a window within {TIMINGS.window_wait_seconds}s; password was not typed.\n\n"
             f"Details written to:\n{LOG_PATH}",
         )
         raise SystemExit(1)
 
     wait_for_stable_window(proc.pid)
-    time.sleep(LOGIN_UI_LOAD_SECONDS)
+    time.sleep(TIMINGS.login_ui_load_seconds)
 
     if not focus_window_for_pid(proc.pid):
         messagebox.showerror(
@@ -646,7 +795,7 @@ def launch_and_login() -> None:
 
     # Activation is asynchronous: the foreground pid can already be WoW while the client is still
     # processing the activation, and keystrokes sent in that gap are dropped.
-    time.sleep(FOCUS_SETTLE_SECONDS)
+    time.sleep(TIMINGS.focus_settle_seconds)
     release_stuck_modifiers()
 
     hwnd = find_window_for_pid(proc.pid)
@@ -662,7 +811,9 @@ def launch_and_login() -> None:
         )
         raise SystemExit(1)
 
-    logging.debug("Typing password into window %s, rect %s", hwnd, rect)
+    logging.debug(
+        "Typing password into window %s, rect %s, keyboard layout %s", hwnd, rect, foreground_keyboard_layout(),
+    )
     type_text(cfg["password"])
     press_enter()
 
@@ -688,7 +839,7 @@ def launch_and_login() -> None:
 
     totp = pyotp.TOTP(cfg["totp_secret"])
     remaining = totp.interval - (time.time() % totp.interval)
-    if remaining < TOTP_MIN_REMAINING_SECONDS:
+    if remaining < TIMINGS.totp_min_remaining_seconds:
         # Typing a code that rolls over mid-entry is rejected by the server as a wrong code.
         logging.debug("Current TOTP expires in %.1fs; waiting for the next one", remaining)
         time.sleep(remaining + 0.2)

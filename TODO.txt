@@ -1,2 +1,4 @@
-since it is only for Windows and only one file, is there a way to tell the GitHub Action to only create the .exe and
+Since it is only for Windows and only one file, is there a way to tell the GitHub Action to only create the .exe and
 not the zip and tar?
+
+Add a foldable, "advanced", part of the configuration menu with the timers? Like WINDOW_WAIT_SECONDS, LOGIN_UI_LOAD_SECONDS etc...
