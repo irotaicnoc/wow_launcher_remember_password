@@ -6,34 +6,83 @@ import sys
 import tempfile
 import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Literal
+import cv2
 import keyring
 import keyring.errors
+import numpy as np
 import pyautogui
 import pyotp
+from PIL import Image, ImageDraw
 
 VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
+VK_RETURN = 0x0D
 
 WINDOW_WAIT_SECONDS = 30
+WINDOW_STABLE_SECONDS = 0.5  # the window rect must stop changing before the client is done building its UI
+WINDOW_STABLE_TIMEOUT_SECONDS = 8
 LOGIN_UI_LOAD_SECONDS = 2.5
+FOCUS_SETTLE_SECONDS = 0.4  # activation is asynchronous: typing immediately loses the first characters
+KEY_HOLD_SECONDS = 0.03  # a key that goes down and up within one frame can be missed entirely
 TYPING_INTERVAL_SECONDS = 0.09
 
 TWO_FA_TIMEOUT_SECONDS = 6
+TWO_FA_POLL_SECONDS = 0.15
+TWO_FA_CONFIRM_SECONDS = 0.25  # re-check delay: proves the prompt persists and the capture is not frozen
 TWO_FA_CONFIDENCE = 0.9
 TWO_FA_REFERENCE = "assets/2fa_prompt_small.jpg"
+
+TOTP_MIN_REMAINING_SECONDS = 4.0  # never type a code that expires while it is being typed
 
 WINDOW_ICON = "assets/wotlk_icon.ico"
 
 KEYRING_SERVICE = "wow-launcher"
-KEYRING_KEYS = ("path", "password", "totp_secret")
+SECRET_KEYS = ("path", "password", "totp_secret")
+SETTING_KEYS = ("debug",)
+KEYRING_KEYS = SECRET_KEYS + SETTING_KEYS
 
 LOG_PATH = Path(tempfile.gettempdir()) / "wow-launcher.log"
+DEBUG_DIR = Path(tempfile.gettempdir()) / "wow-launcher-debug"
+
+# All keystroke timing is handled explicitly below; pyautogui's own pause would add 0.1s per call.
+pyautogui.PAUSE = 0
+
+_debug_enabled = False
+_run_id = ""
 
 
-def setup_logging() -> None:
-    logging.basicConfig(filename=str(LOG_PATH), level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+def setup_logging(debug: bool) -> None:
+    global _debug_enabled, _run_id
+    _debug_enabled = debug
+    _run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logging.basicConfig(
+        filename=str(LOG_PATH),
+        level=logging.DEBUG if debug else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    logging.getLogger().setLevel(logging.DEBUG if debug else logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)  # its DEBUG chatter buries ours
+    if debug:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        logging.debug("--- run %s (debug mode, artifacts in %s) ---", _run_id, DEBUG_DIR)
+
+
+def save_debug_image(image: Image.Image, name: str, box: tuple[int, int, int, int] | None = None) -> None:
+    """Write a screenshot to the debug folder; no-op unless debug mode is on."""
+    if not _debug_enabled:
+        return
+    try:
+        if box is not None:
+            image = image.convert("RGB")
+            ImageDraw.Draw(image).rectangle(box, outline=(255, 0, 0), width=3)
+        image.save(DEBUG_DIR / f"{_run_id}_{name}.png")
+    except OSError:
+        logging.exception("Could not write debug image %s", name)
 
 
 def base_dir() -> Path:
@@ -44,17 +93,201 @@ def base_dir() -> Path:
     return Path(__file__).parent
 
 
-def two_fa_visible() -> bool:
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+MAPVK_VK_TO_VSC = 0
+
+
+class _KeyboardInput(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class _MouseInput(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class _HardwareInput(ctypes.Structure):
+    _fields_ = [("uMsg", ctypes.c_ulong), ("wParamL", ctypes.c_ushort), ("wParamH", ctypes.c_ushort)]
+
+
+class _InputUnion(ctypes.Union):
+    # The union must keep its full size (MOUSEINPUT is the largest member) or SendInput rejects the struct.
+    _fields_ = [("ki", _KeyboardInput), ("mi", _MouseInput), ("hi", _HardwareInput)]
+
+
+class _Input(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("value", _InputUnion)]
+
+
+def _key_event(vk: int, scan: int, flags: int) -> _Input:
+    return _Input(
+        type=INPUT_KEYBOARD,
+        value=_InputUnion(ki=_KeyboardInput(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)),
+    )
+
+
+def _send(events: list[_Input]) -> None:
+    array = (_Input * len(events))(*events)
+    sent = ctypes.windll.user32.SendInput(len(events), ctypes.byref(array), ctypes.sizeof(_Input))
+    if sent != len(events):
+        raise OSError(f"SendInput delivered {sent} of {len(events)} events (last error {ctypes.GetLastError()})")
+
+
+def _press_vk(vk: int, modifiers: int = 0) -> None:
+    """Press one virtual key with real scancodes, held long enough that a per-frame input poll cannot miss it."""
+    user32 = ctypes.windll.user32
+    modifier_vks = [mod_vk for bit, mod_vk in ((1, VK_SHIFT), (2, VK_CONTROL), (4, VK_MENU)) if modifiers & bit]
+    scan = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
+    down = [_key_event(mod_vk, user32.MapVirtualKeyW(mod_vk, MAPVK_VK_TO_VSC), 0) for mod_vk in modifier_vks]
+    down.append(_key_event(vk, scan, 0))
+    _send(down)
+    time.sleep(KEY_HOLD_SECONDS)
+    up = [_key_event(vk, scan, KEYEVENTF_KEYUP)]
+    up += [
+        _key_event(mod_vk, user32.MapVirtualKeyW(mod_vk, MAPVK_VK_TO_VSC), KEYEVENTF_KEYUP)
+        for mod_vk in reversed(modifier_vks)
+    ]
+    _send(up)
+
+
+def _press_unicode(char: str) -> None:
+    """Send the character itself instead of a key, for characters the active layout cannot produce."""
+    _send([_key_event(0, ord(char), KEYEVENTF_UNICODE)])
+    time.sleep(KEY_HOLD_SECONDS)
+    _send([_key_event(0, ord(char), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)])
+
+
+def release_stuck_modifiers() -> None:
+    """A modifier latched down by the OS silently turns the password into a different string."""
+    if sys.platform != "win32":
+        return
+    user32 = ctypes.windll.user32
+    for vk, name in ((VK_SHIFT, "shift"), (VK_CONTROL, "ctrl"), (VK_MENU, "alt")):
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            logging.warning("%s was held down before typing; releasing it", name)
+            _send([_key_event(vk, user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC), KEYEVENTF_KEYUP)])
+
+
+def type_text(text: str) -> None:
+    """Type text through the layout that is active right now, one key at a time."""
+    if sys.platform != "win32":
+        pyautogui.typewrite(text, interval=TYPING_INTERVAL_SECONDS)
+        return
+    for char in text:
+        # VkKeyScanW resolves the character against the current keyboard layout, so this stays correct
+        # even if the layout differs from the one that was active when the process started.
+        scanned = ctypes.windll.user32.VkKeyScanW(ctypes.c_wchar(char)) & 0xFFFF
+        if scanned == 0xFFFF:
+            _press_unicode(char)
+        else:
+            _press_vk(scanned & 0xFF, (scanned >> 8) & 0x07)
+        time.sleep(TYPING_INTERVAL_SECONDS)
+
+
+def press_enter() -> None:
+    if sys.platform != "win32":
+        pyautogui.press("enter")
+        return
+    _press_vk(VK_RETURN)
+
+
+def load_two_fa_reference() -> np.ndarray:
     reference = base_dir() / TWO_FA_REFERENCE
-    try:
-        location = pyautogui.locateOnScreen(
-            str(reference),
-            confidence=TWO_FA_CONFIDENCE,
-            minSearchTime=TWO_FA_TIMEOUT_SECONDS,
+    needle = cv2.imread(str(reference), cv2.IMREAD_GRAYSCALE)
+    if needle is None:
+        raise FileNotFoundError(f"Could not read the 2FA reference image: {reference}")
+    return needle
+
+
+def match_reference(frame: Image.Image, needle: np.ndarray) -> tuple[float, tuple[int, int]]:
+    """Best match score for the reference inside frame, with the top-left corner where it was found."""
+    haystack = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2GRAY)
+    if haystack.shape[0] < needle.shape[0] or haystack.shape[1] < needle.shape[1]:
+        return -1.0, (0, 0)
+    result = cv2.matchTemplate(haystack, needle, cv2.TM_CCOEFF_NORMED)
+    _, best, _, location = cv2.minMaxLoc(result)
+    return float(best), (int(location[0]), int(location[1]))
+
+
+def capture(rect: tuple[int, int, int, int] | None) -> Image.Image:
+    """Screenshot of the primary monitor, cropped to the game window when its rect is known."""
+    frame = pyautogui.screenshot()
+    if rect is None:
+        return frame
+    box = (max(rect[0], 0), max(rect[1], 0), min(rect[2], frame.width), min(rect[3], frame.height))
+    if box[2] - box[0] < 1 or box[3] - box[1] < 1:
+        logging.warning("Window rect %s does not overlap the captured screen %s; searching all of it", rect, frame.size)
+        return frame
+    return frame.crop(box)
+
+
+def two_fa_state(rect: tuple[int, int, int, int] | None) -> Literal["found", "absent", "stale"]:
+    """Watch the game window for the 2FA prompt until it appears or the timeout expires."""
+    needle = load_two_fa_reference()
+    state: Literal["found", "absent", "stale"] = "absent"
+    best_score, best_location, best_frame = -1.0, (0, 0), None
+    deadline = time.monotonic() + TWO_FA_TIMEOUT_SECONDS
+    started = time.monotonic()
+
+    warned_about_size = False
+    while True:
+        frame = capture(rect)
+        if not warned_about_size and (frame.height < needle.shape[0] or frame.width < needle.shape[1]):
+            logging.warning(
+                "The 2FA reference is %sx%s but the searched area is only %sx%s, so it can never match",
+                needle.shape[1], needle.shape[0], frame.width, frame.height,
+            )
+            warned_about_size = True
+        score, location = match_reference(frame, needle)
+        if best_frame is None or score > best_score:
+            best_score, best_location, best_frame = score, location, frame
+
+        if score >= TWO_FA_CONFIDENCE:
+            # A real prompt stays put on an animated screen. A capture pipeline that has gone stale keeps
+            # returning one frozen frame, which is what makes an old prompt look like a current one.
+            time.sleep(TWO_FA_CONFIRM_SECONDS)
+            again = capture(rect)
+            again_score, _ = match_reference(again, needle)
+            best_score, best_location, best_frame = score, location, frame  # save the frame we acted on
+            if again.tobytes() == frame.tobytes():
+                logging.error(
+                    "2FA prompt matched at %s (%.3f) but the screen capture is frozen: "
+                    "two frames %ss apart are byte-identical",
+                    location, score, TWO_FA_CONFIRM_SECONDS,
+                )
+                state = "stale"
+                break
+            if again_score >= TWO_FA_CONFIDENCE:
+                logging.debug("2FA prompt confirmed at %s (%.3f, then %.3f)", location, score, again_score)
+                state = "found"
+                break
+            logging.warning(
+                "2FA prompt matched at %s (%.3f) but was gone %ss later (%.3f); not typing a code",
+                location, score, TWO_FA_CONFIRM_SECONDS, again_score,
+            )
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(TWO_FA_POLL_SECONDS)
+
+    logging.debug(
+        "2FA search ended as '%s' after %.1fs, best score %.3f at %s (threshold %.2f)",
+        state, time.monotonic() - started, best_score, best_location, TWO_FA_CONFIDENCE,
+    )
+    if best_frame is not None:
+        box = (
+            best_location[0], best_location[1],
+            best_location[0] + needle.shape[1], best_location[1] + needle.shape[0],
         )
-    except pyautogui.ImageNotFoundException:
-        return False
-    return location is not None
+        save_debug_image(best_frame, f"2fa_{state}_score{best_score:.3f}", box=box)
+    return state
 
 
 def load_credentials() -> dict[str, str]:
@@ -138,6 +371,7 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     path_var = tk.StringVar(value=prefill.get("path", ""))
     pw_var = tk.StringVar(value=prefill.get("password", ""))
     totp_var = tk.StringVar(value=prefill.get("totp_secret", ""))
+    debug_var = tk.BooleanVar(value=prefill.get("debug", "") == "1")
 
     tk.Label(
         root,
@@ -174,6 +408,18 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     totp_entry.grid(row=3, column=1, sticky="we", padx=4, pady=4)
     make_password_toggle(root, totp_entry).grid(row=3, column=2, sticky="w", padx=(4, 10), pady=4)
 
+    debug_check = tk.Checkbutton(root, text="Debug mode", variable=debug_var, anchor="w")
+    debug_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 0))
+    attach_tooltip(
+        widget=debug_check,
+        text=(
+            "Off by default. When on, every launch writes a detailed log and saves\n"
+            "screenshots of the login flow, so a wrong 2FA detection can be diagnosed.\n"
+            f"Log: {LOG_PATH}\nScreenshots: {DEBUG_DIR}"
+        ),
+        side="right",
+    )
+
     result: dict[str, str] = {}
 
     def on_save() -> None:
@@ -190,10 +436,11 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         result["path"] = path_value
         result["password"] = pw_value
         result["totp_secret"] = totp_value
+        result["debug"] = "1" if debug_var.get() else "0"
         root.destroy()
 
     button_frame = tk.Frame(root)
-    button_frame.grid(row=4, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
+    button_frame.grid(row=5, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
     tk.Button(button_frame, text="Cancel", command=root.destroy, width=10).pack(side="right", padx=(4, 0))
     tk.Button(button_frame, text="Save", command=on_save, width=10).pack(side="right")
 
@@ -213,42 +460,13 @@ def shift_held() -> bool:
     return bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
 
 
-def wait_for_window_for_pid(pid: int, timeout: float) -> bool:
+def find_window_for_pid(pid: int) -> int | None:
+    """Handle of the first visible top-level window owned by pid, in z-order."""
     if sys.platform != "win32":
-        return True
+        return None
     user32 = ctypes.windll.user32
     EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
     found: list[int] = []
-
-    def callback(hwnd: int, _lparam: int) -> bool:
-        process_id = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-        if process_id.value == pid and user32.IsWindowVisible(hwnd):
-            found.append(hwnd)
-            return False
-        return True
-
-    enum_proc = EnumProc(callback)
-    deadline = time.monotonic() + timeout
-    while True:
-        found.clear()
-        user32.EnumWindows(enum_proc, 0)
-        if found:
-            return True
-        if time.monotonic() >= deadline:
-            logging.error("Timed out after %ss waiting for WoW window (pid=%s)", timeout, pid)
-            return False
-        time.sleep(0.2)
-
-
-def focus_window_for_pid(pid: int) -> bool:
-    if sys.platform != "win32":
-        return True
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    user32.GetForegroundWindow.restype = ctypes.c_void_p
-    found: list[int] = []
-    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     def callback(hwnd: int, _lparam: int) -> bool:
         process_id = ctypes.c_ulong()
@@ -259,10 +477,77 @@ def focus_window_for_pid(pid: int) -> bool:
         return True
 
     user32.EnumWindows(EnumProc(callback), 0)
-    if not found:
+    return found[0] if found else None
+
+
+def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    if sys.platform != "win32":
+        return None
+
+    class Rect(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    rect = Rect()
+    if not ctypes.windll.user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def wait_for_window_for_pid(pid: int, timeout: float) -> bool:
+    if sys.platform != "win32":
+        return True
+    deadline = time.monotonic() + timeout
+    while True:
+        hwnd = find_window_for_pid(pid)
+        if hwnd is not None:
+            logging.debug("WoW window %s appeared after %.1fs", hwnd, timeout - (deadline - time.monotonic()))
+            return True
+        if time.monotonic() >= deadline:
+            logging.error("Timed out after %ss waiting for WoW window (pid=%s)", timeout, pid)
+            return False
+        time.sleep(0.2)
+
+
+def wait_for_stable_window(pid: int) -> None:
+    """Wait until the window stops moving and resizing: the client creates it before the login UI exists."""
+    if sys.platform != "win32":
+        return
+    deadline = time.monotonic() + WINDOW_STABLE_TIMEOUT_SECONDS
+    last_rect: tuple[int, int, int, int] | None = None
+    unchanged_since = time.monotonic()
+    while time.monotonic() < deadline:
+        hwnd = find_window_for_pid(pid)
+        rect = window_rect(hwnd) if hwnd is not None else None
+        if rect != last_rect:
+            logging.debug("WoW window rect changed to %s", rect)
+            last_rect, unchanged_since = rect, time.monotonic()
+        elif time.monotonic() - unchanged_since >= WINDOW_STABLE_SECONDS:
+            return
+        time.sleep(0.1)
+    logging.warning("WoW window rect never settled within %ss", WINDOW_STABLE_TIMEOUT_SECONDS)
+
+
+def foreground_pid() -> int:
+    if sys.platform != "win32":
+        return 0
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    process_id = ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(process_id))
+    return process_id.value
+
+
+def focus_window_for_pid(pid: int) -> bool:
+    if sys.platform != "win32":
+        return True
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    hwnd = find_window_for_pid(pid)
+    if hwnd is None:
         logging.error("No visible window found for WoW pid %s", pid)
         return False
-    hwnd = found[0]
     SW_RESTORE = 9
     user32.ShowWindow(hwnd, SW_RESTORE)
 
@@ -285,18 +570,25 @@ def focus_window_for_pid(pid: int) -> bool:
     # Focus changes may be processed asynchronously after AttachThreadInput detaches,
     # and WoW may have several top-level windows — verify by PID, not handle, with a brief poll.
     deadline = time.monotonic() + 0.5
-    foreground_pid = ctypes.c_ulong()
     while True:
-        user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(foreground_pid))
-        if foreground_pid.value == pid:
+        current = foreground_pid()
+        if current == pid:
             return True
         if time.monotonic() >= deadline:
-            logging.error(
-                "WoW did not become foreground (foreground pid=%s, want %s)",
-                foreground_pid.value, pid,
-            )
+            logging.error("WoW did not become foreground (foreground pid=%s, want %s)", current, pid)
             return False
         time.sleep(0.05)
+
+
+def ensure_foreground(pid: int) -> bool:
+    """Re-check right before typing: anything can steal focus between focusing and the first keystroke."""
+    if sys.platform != "win32":
+        return True
+    current = foreground_pid()
+    if current == pid:
+        return True
+    logging.warning("Foreground window belongs to pid %s, not WoW (%s); refocusing", current, pid)
+    return focus_window_for_pid(pid)
 
 
 def ensure_credentials(force: bool = False) -> dict[str, str]:
@@ -307,6 +599,8 @@ def ensure_credentials(force: bool = False) -> dict[str, str]:
             raise SystemExit("Setup cancelled.")
         save_credentials(prompted)
         creds = prompted
+        if creds.get("debug") == "1" and not _debug_enabled:
+            setup_logging(debug=True)  # apply the setting to this run too, not just the next one
     return creds
 
 
@@ -330,6 +624,8 @@ def launch_and_login() -> None:
         messagebox.showerror("Launch failed", f"Could not start WoW:\n{exc}")
         return
 
+    logging.debug("Started WoW (pid=%s) from %s", proc.pid, exe_path)
+
     if not wait_for_window_for_pid(proc.pid, timeout=WINDOW_WAIT_SECONDS):
         messagebox.showerror(
             "Window not found",
@@ -338,6 +634,7 @@ def launch_and_login() -> None:
         )
         raise SystemExit(1)
 
+    wait_for_stable_window(proc.pid)
     time.sleep(LOGIN_UI_LOAD_SECONDS)
 
     if not focus_window_for_pid(proc.pid):
@@ -347,29 +644,75 @@ def launch_and_login() -> None:
         )
         raise SystemExit(1)
 
-    pyautogui.typewrite(cfg["password"], interval=TYPING_INTERVAL_SECONDS)
-    pyautogui.press("enter")
+    # Activation is asynchronous: the foreground pid can already be WoW while the client is still
+    # processing the activation, and keystrokes sent in that gap are dropped.
+    time.sleep(FOCUS_SETTLE_SECONDS)
+    release_stuck_modifiers()
+
+    hwnd = find_window_for_pid(proc.pid)
+    rect = window_rect(hwnd) if hwnd is not None else None
+    save_debug_image(capture(rect), "before_password")
+
+    # Typing the password into whatever else grabbed focus would leak it into another window.
+    if not ensure_foreground(proc.pid):
+        messagebox.showerror(
+            "Focus lost",
+            "Another window took the focus just before the password was typed, so nothing was typed.\n\n"
+            f"Details written to:\n{LOG_PATH}",
+        )
+        raise SystemExit(1)
+
+    logging.debug("Typing password into window %s, rect %s", hwnd, rect)
+    type_text(cfg["password"])
+    press_enter()
 
     if not cfg["totp_secret"]:
         return
 
-    if not two_fa_visible():
+    state = two_fa_state(rect)
+    if state == "stale":
+        messagebox.showwarning(
+            "2FA skipped",
+            "The 2FA prompt appeared to be on screen, but the screen capture is frozen: repeated "
+            "screenshots are byte-identical, so what was matched is not what is on screen now.\n\n"
+            "No code was typed. If the game is waiting for a 2FA code, enter it manually.\n\n"
+            f"Details written to:\n{LOG_PATH}",
+        )
+        return
+    if state != "found":
         return
 
-    code = pyotp.TOTP(cfg["totp_secret"]).now()
-    pyautogui.typewrite(code, interval=TYPING_INTERVAL_SECONDS)
-    pyautogui.press("enter")
+    if not ensure_foreground(proc.pid):
+        logging.error("Lost focus while waiting for the 2FA prompt; not typing a code")
+        return
+
+    totp = pyotp.TOTP(cfg["totp_secret"])
+    remaining = totp.interval - (time.time() % totp.interval)
+    if remaining < TOTP_MIN_REMAINING_SECONDS:
+        # Typing a code that rolls over mid-entry is rejected by the server as a wrong code.
+        logging.debug("Current TOTP expires in %.1fs; waiting for the next one", remaining)
+        time.sleep(remaining + 0.2)
+    logging.debug("Typing TOTP code (valid for %.1fs)", totp.interval - (time.time() % totp.interval))
+
+    type_text(totp.now())
+    press_enter()
 
 
 def main() -> None:
-    setup_logging()
     parser = argparse.ArgumentParser(description="Launch WoW with credentials stored in Windows Credential Manager.")
     parser.add_argument(
         "--setup",
         action="store_true",
-        help="Open the setup dialog to (re)enter path, password, and TOTP secret.",
+        help="Open the setup dialog to (re)enter path, password, TOTP secret, and debug mode.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Force debug mode on for this run, whatever the stored setting is.",
     )
     args = parser.parse_args()
+
+    setup_logging(debug=args.debug or keyring.get_password(KEYRING_SERVICE, "debug") == "1")
 
     try:
         if args.setup or shift_held():
