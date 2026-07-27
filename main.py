@@ -479,8 +479,13 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     totp_entry.grid(row=3, column=1, sticky="we", padx=4, pady=4)
     make_password_toggle(root, totp_entry).grid(row=3, column=2, sticky="w", padx=(4, 10), pady=4)
 
-    debug_check = tk.Checkbutton(root, text="Debug mode", variable=debug_var, anchor="w")
-    debug_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 0))
+    advanced_frame = tk.Frame(root)
+    advanced_frame.grid(row=5, column=0, columnspan=3, sticky="we", padx=10, pady=(2, 0))
+    advanced_frame.grid_remove()  # folded away until the user asks for it
+    advanced_frame.columnconfigure(0, weight=1)
+
+    debug_check = tk.Checkbutton(advanced_frame, text="Debug mode", variable=debug_var, anchor="w")
+    debug_check.grid(row=0, column=0, sticky="w", pady=(0, 4))
     attach_tooltip(
         widget=debug_check,
         text=(
@@ -491,13 +496,12 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         side="right",
     )
 
-    advanced_frame = tk.LabelFrame(root, text="Login flow timings", padx=6, pady=4)
-    advanced_frame.grid(row=6, column=0, columnspan=3, sticky="we", padx=10, pady=(4, 0))
-    advanced_frame.grid_remove()  # folded away until the user asks for it
-    advanced_frame.columnconfigure(1, weight=1)
+    timings_frame = tk.LabelFrame(advanced_frame, text="Login flow timings", padx=6, pady=4)
+    timings_frame.grid(row=1, column=0, sticky="we")
+    timings_frame.columnconfigure(1, weight=1)
 
     tk.Label(
-        advanced_frame,
+        timings_frame,
         text="Leave these alone unless the launcher mistimes something. Hover a name to see what it does.",
         justify="left",
         fg="#555",
@@ -505,11 +509,11 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
 
     timing_vars: dict[str, tk.StringVar] = {}
     for index, (key, label, tooltip, _low, _high) in enumerate(TIMING_FIELDS, start=1):
-        field_label = tk.Label(advanced_frame, text=label)
+        field_label = tk.Label(timings_frame, text=label)
         field_label.grid(row=index, column=0, sticky="w", pady=1)
         attach_tooltip(widget=field_label, text=tooltip, side="right")
         timing_vars[key] = tk.StringVar(value=f"{getattr(timings, key):g}")
-        tk.Entry(advanced_frame, textvariable=timing_vars[key], width=10, justify="right").grid(
+        tk.Entry(timings_frame, textvariable=timing_vars[key], width=10, justify="right").grid(
             row=index, column=1, sticky="e", pady=1,
         )
 
@@ -518,7 +522,7 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         for field, *_ in TIMING_FIELDS:
             timing_vars[field].set(f"{getattr(defaults, field):g}")
 
-    tk.Button(advanced_frame, text="Reset to defaults", command=reset_timings).grid(
+    tk.Button(timings_frame, text="Reset to defaults", command=reset_timings).grid(
         row=len(TIMING_FIELDS) + 1, column=0, columnspan=2, sticky="e", pady=(6, 2),
     )
 
@@ -527,17 +531,19 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
     def toggle_advanced() -> None:
         if advanced_open.get():
             advanced_frame.grid_remove()
-            advanced_toggle.config(text="► Advanced")
+            advanced_toggle.config(text="► Advanced settings")
         else:
             advanced_frame.grid()
-            advanced_toggle.config(text="▼ Advanced")
+            advanced_toggle.config(text="▼ Advanced settings")
         advanced_open.set(not advanced_open.get())
         root.update_idletasks()
         root.geometry("")  # let the window shrink back when the section folds away
         root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
 
-    advanced_toggle = tk.Button(root, text="► Advanced", command=toggle_advanced, relief="flat", anchor="w", width=12)
-    advanced_toggle.grid(row=5, column=0, sticky="w", padx=6, pady=(6, 0))
+    advanced_toggle = tk.Button(
+        root, text="► Advanced settings", command=toggle_advanced, relief="flat", anchor="w", width=20,
+    )
+    advanced_toggle.grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 0))
 
     result: dict[str, str] = {}
 
@@ -580,7 +586,7 @@ def prompt_for_credentials(prefill: dict[str, str]) -> dict[str, str] | None:
         root.destroy()
 
     button_frame = tk.Frame(root)
-    button_frame.grid(row=7, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
+    button_frame.grid(row=6, column=0, columnspan=3, sticky="e", padx=10, pady=(8, 12))
     tk.Button(button_frame, text="Cancel", command=root.destroy, width=10).pack(side="right", padx=(4, 0))
     tk.Button(button_frame, text="Save", command=on_save, width=10).pack(side="right")
 

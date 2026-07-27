@@ -20,8 +20,7 @@ On first run, a setup dialog asks for:
 - Path to `Wow.exe`
 - Account password
 - TOTP secret (optional: leave blank if your account doesn't use 2FA)
-- Debug mode (optional, off by default: see [Debug mode](#debug-mode))
-- **Advanced** (folded away by default): the login flow timings, see [Timings](#timings)
+- **► Advanced settings**, folded away by default: [Debug mode](#debug-mode) and the login flow [Timings](#timings)
 
 Values are stored in **Windows Credential Manager** under the service name `wow-launcher`, encrypted with your Windows user account's DPAPI key. They aren't readable by other users on the machine and don't roam to other machines.
 
@@ -39,9 +38,9 @@ Three ways to reopen the setup dialog:
 
 ## Timings
 
-Click **▶ Advanced** in the setup dialog to unfold the timings that govern the login flow. Every one of them has a
-tooltip on its name, and **Reset to defaults** puts them all back. They are stored alongside the credentials, so they
-survive updates of the exe.
+Click **► Advanced settings** in the setup dialog to unfold them. Every timing has a tooltip on its name, and
+**Reset to defaults** puts them all back. They are stored alongside the credentials, so they survive updates of the
+exe.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -60,8 +59,8 @@ Values outside a sane range are refused when saving, and anything unreadable fal
 
 ## Debug mode
 
-Off by default. Tick **Debug mode** in the setup dialog (or pass `--debug` for a single run) to make every launch
-record what it saw:
+Off by default. Tick **Debug mode** under **► Advanced settings** in the setup dialog (or pass `--debug` for a single
+run) to make every launch record what it saw:
 
 - `%TEMP%\wow-launcher.log` gets a detailed trace: window handle and rect, when the window settled, best 2FA match
   score and position, TOTP validity window.
